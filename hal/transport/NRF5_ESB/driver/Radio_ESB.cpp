@@ -59,6 +59,25 @@ static uint8_t node_address = 0;
 // TX power level
 static int8_t tx_power_level = (MY_NRF5_ESB_PA_LEVEL << RADIO_TXPOWER_TXPOWER_Pos);
 
+volatile bool trace_enable = false;
+#define TRACE_ENTRIES	(1024)
+static volatile uint32_t trace_index;
+static volatile uint64_t trace_buffer_line[ TRACE_ENTRIES ];
+static volatile uint64_t trace_buffer_time[ TRACE_ENTRIES ];
+inline void NRF5_TRACE( uint32_t line ) 
+{
+	if( trace_enable ) {
+		if( trace_index >= TRACE_ENTRIES ) {
+			__asm__("BKPT"); 
+		}
+		else {
+			trace_buffer_line[ trace_index ] = line;
+			trace_buffer_time[ trace_index ] = (*(uint32_t *)0xE0001004); 
+			++ trace_index; 
+		}
+	}
+}
+
 // Initialize radio unit
 static bool NRF5_ESB_initialize()
 {
@@ -399,6 +418,7 @@ void NRF5_ESB_starttx()
 
 void NRF5_ESB_endtx()
 {
+	NRF5_TRACE( __LINE__ );
 	// Clear PPI
 	NRF_PPI->CHENCLR = NRF5_ESB_PPI_BITS;
 	// Enable Ready interrupt
@@ -460,7 +480,8 @@ static bool NRF5_ESB_sendMessage(uint8_t recipient, const void *buf, uint8_t len
 
 	// Set RSSI to invalid
 	rssi_tx = INVALID_RSSI;
-
+trace_index = 0;
+trace_enable=true;
 	NRF5_ESB_starttx();
 
 	// Wait for end of transmission
@@ -481,6 +502,8 @@ static bool NRF5_ESB_sendMessage(uint8_t recipient, const void *buf, uint8_t len
 		}
 #endif
 	}
+	trace_enable = false;
+	trace_index = 0;
 
 	// Calculate RSSI
 	if (rssi_tx == INVALID_RSSI) {
@@ -530,6 +553,7 @@ static uint8_t reverse_byte(uint8_t address)
 
 inline void _stopTimer()
 {
+	NRF5_TRACE( __LINE__ );
 	// Stop timer
 	NRF5_RADIO_TIMER->TASKS_STOP = 1;
 	// NRF52 PAN#78
@@ -538,6 +562,7 @@ inline void _stopTimer()
 
 inline void _stopACK()
 {
+	NRF5_TRACE( __LINE__ );
 	// Enable RX when ready, Enable RX after disabling task
 	NRF_RADIO->SHORTS = NRF5_ESB_SHORTS_RX;
 
@@ -562,6 +587,7 @@ extern "C" {
 
 	void RADIO_BitCountMatch( void )
 	{
+		NRF5_TRACE( __LINE__ );
 		NRF_RESET_EVENT(NRF_RADIO->EVENTS_BCMATCH);
 #ifdef MY_DEBUG_VERBOSE_NRF5_ESB
 		intcntr_bcmatch++;
@@ -571,6 +597,7 @@ extern "C" {
 
 		// In RX mode -> prepare ACK or RX
 		if (NRF_RADIO->STATE == RADIO_STATE_STATE_Rx) {
+			NRF5_TRACE( __LINE__ );
 			// Send ACK only for node address, don't care about the ACK bit to handle bad nRF24 clones
 			if (NRF_RADIO->RXMATCH == NRF5_ESB_NODE_ADDR) {
 				// Send ACK after END, an empty packet is provided in READY event
@@ -582,6 +609,7 @@ extern "C" {
 
 			// Handle incoming ACK packet
 			if (NRF_RADIO->RXMATCH == NRF5_ESB_TX_ADDR) {
+				NRF5_TRACE( __LINE__ );
 				/** Calculate time to switch radio off
 				 * This is an ACK packet, the radio is disabled by Timer
 				 * event after CC[1], calculate the time switching of the
@@ -594,6 +622,7 @@ extern "C" {
 				NRF5_RADIO_TIMER->CC[1] += ((rx_buffer.len + 3) << NRF5_ESB_byte_time());
 			}
 		} else {
+			NRF5_TRACE( __LINE__ );
 			// Current mode is TX:
 			// After TX the Radio has to be always in RX mode to
 			// receive ACK or start implicit listen mode after send.
@@ -604,6 +633,7 @@ extern "C" {
 
 	void RADIO_Ready( void )
 	{
+		NRF5_TRACE( __LINE__ );
 		NRF_RESET_EVENT(NRF_RADIO->EVENTS_READY);
 #ifdef MY_DEBUG_VERBOSE_NRF5_ESB
 		intcntr_ready++;
@@ -620,8 +650,10 @@ extern "C" {
 
 	void RADIO_EndOfRxPacket( void )
 	{
+		NRF5_TRACE( __LINE__ );
 		// Ensure no ACK package is received
 		if (NRF_RADIO->RXMATCH != NRF5_ESB_TX_ADDR) {
+			NRF5_TRACE( __LINE__ );
 			// calculate a package id
 			uint32_t pkgid = rx_buffer.pid << 16 | NRF_RADIO->RXCRC;
 			if (pkgid != package_ids[NRF_RADIO->RXMATCH]) {
@@ -652,7 +684,7 @@ extern "C" {
 			}
 		} else {
 			// ACK package received, ducplicates are accepted
-
+			NRF5_TRACE( __LINE__ );
 			// rssi value in ACK included?
 			if (rx_buffer.len == 1) {
 				rssi_tx = 0-rx_buffer.data[0];
@@ -686,6 +718,7 @@ extern "C" {
 		/** This event is generated after TX or RX finised
 		 */
 		if (NRF_RADIO->EVENTS_END == 1) {
+			NRF5_TRACE( __LINE__ );
 			NRF_RESET_EVENT(NRF_RADIO->EVENTS_END);
 #ifdef MY_DEBUG_VERBOSE_NRF5_ESB
 			intcntr_end++;
@@ -706,6 +739,7 @@ extern "C" {
 				}
 			} else {
 				// TX end
+				NRF5_TRACE( __LINE__ );
 			}
 		}
 	}
@@ -716,16 +750,23 @@ extern "C" {
 	 */
 	void NRF5_RADIO_TIMER_IRQ_HANDLER()
 	{
+		NRF5_TRACE( __LINE__ );
 		if (NRF5_RADIO_TIMER->EVENTS_COMPARE[3] == 1) {
 			_stopTimer();
 			NRF_RESET_EVENT(NRF5_RADIO_TIMER->EVENTS_COMPARE[1]);
 			if (ack_received == false) {
+				NRF5_TRACE( __LINE__ );
 				// missing ACK, start TX again
 				NRF5_ESB_starttx();
 			} else {
+				NRF5_TRACE( __LINE__ );
 				// finised TX
 				NRF5_ESB_endtx();
 			}
+		}
+
+		if (NRF5_RADIO_TIMER->EVENTS_COMPARE[1] == 1) {
+			__asm__("BKPT");
 		}
 	}
 } // extern "C"
