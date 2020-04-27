@@ -559,6 +559,111 @@ static inline uint8_t NRF5_ESB_byte_time()
 }
 
 extern "C" {
+
+	void RADIO_BitCountMatch( void )
+	{
+		NRF_RESET_EVENT(NRF_RADIO->EVENTS_BCMATCH);
+#ifdef MY_DEBUG_VERBOSE_NRF5_ESB
+		intcntr_bcmatch++;
+#endif
+		// Disable bitcounter
+		NRF_RADIO->TASKS_BCSTOP = 1;
+
+		// In RX mode -> prepare ACK or RX
+		if (NRF_RADIO->STATE == RADIO_STATE_STATE_Rx) {
+			// Send ACK only for node address, don't care about the ACK bit to handle bad nRF24 clones
+			if (NRF_RADIO->RXMATCH == NRF5_ESB_NODE_ADDR) {
+				// Send ACK after END, an empty packet is provided in READY event
+				NRF_RADIO->SHORTS = NRF5_ESB_SHORTS_RX_TX;
+			} else {
+				// No ACK -> Start RX after END
+				NRF_RADIO->SHORTS = NRF5_ESB_SHORTS_RX;
+			}
+
+			// Handle incoming ACK packet
+			if (NRF_RADIO->RXMATCH == NRF5_ESB_TX_ADDR) {
+				/** Calculate time to switch radio off
+				 * This is an ACK packet, the radio is disabled by Timer
+				 * event after CC[1], calculate the time switching of the
+				 * radio.
+				 */
+				// Read current timer value
+				NRF5_RADIO_TIMER->TASKS_CAPTURE[1] = 1;
+
+				// Set Timer compare register 0 to end of packet (len+CRC)
+				NRF5_RADIO_TIMER->CC[1] += ((rx_buffer.len + 3) << NRF5_ESB_byte_time());
+			}
+		} else {
+			// Current mode is TX:
+			// After TX the Radio has to be always in RX mode to
+			// receive ACK or start implicit listen mode after send.
+			NRF_RADIO->SHORTS = NRF5_ESB_SHORTS_TX_RX;
+			// HINT: Fast ramp up can enabled here. Needs more code on other lines
+		}
+	}
+
+	void RADIO_Ready( void )
+	{
+		NRF_RESET_EVENT(NRF_RADIO->EVENTS_READY);
+#ifdef MY_DEBUG_VERBOSE_NRF5_ESB
+		intcntr_ready++;
+#endif
+		// Configure DMA target address
+		NRF_RADIO->PACKETPTR = (uint32_t)&rx_buffer;
+
+		/* Don't care about if next packet RX or ACK,
+			* prepare current rx_buffer to send an ACK */
+
+		// Set outgoing address to node address for ACK packages
+		NRF_RADIO->TXADDRESS = NRF5_ESB_NODE_ADDR;
+	}
+
+	void RADIO_EndOfRxPacket( void )
+	{
+		// Ensure no ACK package is received
+		if (NRF_RADIO->RXMATCH != NRF5_ESB_TX_ADDR) {
+			// calculate a package id
+			uint32_t pkgid = rx_buffer.pid << 16 | NRF_RADIO->RXCRC;
+			if (pkgid != package_ids[NRF_RADIO->RXMATCH]) {
+				// correct package -> store id to dedect duplicates
+				package_ids[NRF_RADIO->RXMATCH] = pkgid;
+				rx_buffer.rssi = NRF_RADIO->RSSISAMPLE;
+#ifdef MY_DEBUG_VERBOSE_NRF5_ESB
+				// Store debug data
+				rx_buffer.rxmatch = NRF_RADIO->RXMATCH;
+#endif
+				// Push data to buffer
+				if (rx_circular_buffer.pushFront(&rx_buffer)) {
+					// Prepare ACK package
+					rx_buffer.data[0]=rx_buffer.rssi;
+					rx_buffer.len=1; // data[0] is set some lines before
+#ifndef MY_NRF5_ESB_REVERSE_ACK_TX
+					rx_buffer.noack = 1;
+#else
+					rx_buffer.noack = 0;
+#endif
+				} else {
+					// Buffer is full
+					// Stop ACK
+					_stopACK();
+					// Increment pkgid allowing receive the package again
+					package_ids[NRF_RADIO->RXMATCH]++;
+				}
+			}
+		} else {
+			// ACK package received, ducplicates are accepted
+
+			// rssi value in ACK included?
+			if (rx_buffer.len == 1) {
+				rssi_tx = 0-rx_buffer.data[0];
+			}
+			// notify TX process
+			ack_received = true;
+			// End TX
+			NRF5_ESB_endtx();
+		}
+	}
+
 	/** Radio Interrupt handler */
 	void RADIO_IRQHandler()
 	{
@@ -568,62 +673,14 @@ extern "C" {
 		 * In TX mode switch always to RX.
 		 */
 		if (NRF_RADIO->EVENTS_BCMATCH == 1) {
-			NRF_RESET_EVENT(NRF_RADIO->EVENTS_BCMATCH);
-#ifdef MY_DEBUG_VERBOSE_NRF5_ESB
-			intcntr_bcmatch++;
-#endif
-			// Disable bitcounter
-			NRF_RADIO->TASKS_BCSTOP = 1;
-
-			// In RX mode -> prepare ACK or RX
-			if (NRF_RADIO->STATE == RADIO_STATE_STATE_Rx) {
-				// Send ACK only for node address, don't care about the ACK bit to handle bad nRF24 clones
-				if (NRF_RADIO->RXMATCH == NRF5_ESB_NODE_ADDR) {
-					// Send ACK after END, an empty packet is provided in READY event
-					NRF_RADIO->SHORTS = NRF5_ESB_SHORTS_RX_TX;
-				} else {
-					// No ACK -> Start RX after END
-					NRF_RADIO->SHORTS = NRF5_ESB_SHORTS_RX;
-				}
-
-				// Handle incoming ACK packet
-				if (NRF_RADIO->RXMATCH == NRF5_ESB_TX_ADDR) {
-					/** Calculate time to switch radio off
-					 * This is an ACK packet, the radio is disabled by Timer
-					 * event after CC[1], calculate the time switching of the
-					 * radio.
-					 */
-					// Read current timer value
-					NRF5_RADIO_TIMER->TASKS_CAPTURE[1] = 1;
-
-					// Set Timer compare register 0 to end of packet (len+CRC)
-					NRF5_RADIO_TIMER->CC[1] += ((rx_buffer.len + 3) << NRF5_ESB_byte_time());
-				}
-			} else {
-				// Current mode is TX:
-				// After TX the Radio has to be always in RX mode to
-				// receive ACK or start implicit listen mode after send.
-				NRF_RADIO->SHORTS = NRF5_ESB_SHORTS_TX_RX;
-				// HINT: Fast ramp up can enabled here. Needs more code on other lines
-			}
+			RADIO_BitCountMatch();
 		}
 
 		/** Ready event is generated before RX starts
 		 * An free rx buffer is allocated or radio is disabled on failures
 		 */
 		if (NRF_RADIO->EVENTS_READY == 1) {
-			NRF_RESET_EVENT(NRF_RADIO->EVENTS_READY);
-#ifdef MY_DEBUG_VERBOSE_NRF5_ESB
-			intcntr_ready++;
-#endif
-			// Configure DMA target address
-			NRF_RADIO->PACKETPTR = (uint32_t)&rx_buffer;
-
-			/* Don't care about if next packet RX or ACK,
-			 * prepare current rx_buffer to send an ACK */
-
-			// Set outgoing address to node address for ACK packages
-			NRF_RADIO->TXADDRESS = NRF5_ESB_NODE_ADDR;
+			RADIO_Ready();
 		}
 
 		/** This event is generated after TX or RX finised
@@ -633,7 +690,6 @@ extern "C" {
 #ifdef MY_DEBUG_VERBOSE_NRF5_ESB
 			intcntr_end++;
 #endif
-
 			// Enable ACK bitcounter for next packet
 			NRF_RADIO->BCC = NRF5_ESB_BITCOUNTER;
 
@@ -643,48 +699,7 @@ extern "C" {
 			        (NRF_RADIO->STATE == RADIO_STATE_STATE_RxDisable) or
 			        (NRF_RADIO->STATE == RADIO_STATE_STATE_TxRu)) {
 				if (NRF_RADIO->CRCSTATUS) {
-					// Ensure no ACK package is received
-					if (NRF_RADIO->RXMATCH != NRF5_ESB_TX_ADDR) {
-						// calculate a package id
-						uint32_t pkgid = rx_buffer.pid << 16 | NRF_RADIO->RXCRC;
-						if (pkgid != package_ids[NRF_RADIO->RXMATCH]) {
-							// correct package -> store id to dedect duplicates
-							package_ids[NRF_RADIO->RXMATCH] = pkgid;
-							rx_buffer.rssi = NRF_RADIO->RSSISAMPLE;
-#ifdef MY_DEBUG_VERBOSE_NRF5_ESB
-							// Store debug data
-							rx_buffer.rxmatch = NRF_RADIO->RXMATCH;
-#endif
-							// Push data to buffer
-							if (rx_circular_buffer.pushFront(&rx_buffer)) {
-								// Prepare ACK package
-								rx_buffer.data[0]=rx_buffer.rssi;
-								rx_buffer.len=1; // data[0] is set some lines before
-#ifndef MY_NRF5_ESB_REVERSE_ACK_TX
-								rx_buffer.noack = 1;
-#else
-								rx_buffer.noack = 0;
-#endif
-							} else {
-								// Buffer is full
-								// Stop ACK
-								_stopACK();
-								// Increment pkgid allowing receive the package again
-								package_ids[NRF_RADIO->RXMATCH]++;
-							}
-						}
-					} else {
-						// ACK package received, ducplicates are accepted
-
-						// rssi value in ACK included?
-						if (rx_buffer.len == 1) {
-							rssi_tx = 0-rx_buffer.data[0];
-						}
-						// notify TX process
-						ack_received = true;
-						// End TX
-						NRF5_ESB_endtx();
-					}
+					RADIO_EndOfRxPacket();
 				} else {
 					/** Invalid CRC -> Switch back to RX, Stop sending ACK */
 					_stopACK();
