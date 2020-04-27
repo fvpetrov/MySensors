@@ -466,6 +466,7 @@ static bool NRF5_ESB_sendMessage(uint8_t recipient, const void *buf, uint8_t len
 	// Wait for end of transmission
 #ifdef MY_DEBUG_VERBOSE_NRF5_ESB
 	uint32_t wakeups = 0;
+	uint32_t start_time = millis();
 #endif
 	while (events_end_tx == false) {
 		// Power off CPU until next interrupt
@@ -473,6 +474,11 @@ static bool NRF5_ESB_sendMessage(uint8_t recipient, const void *buf, uint8_t len
 		// hwWaitForInterrupt();
 #ifdef MY_DEBUG_VERBOSE_NRF5_ESB
 		wakeups++;
+		if( millis() - start_time > 100 )
+		{
+			NRF5_RADIO_DEBUG(PSTR("NRF5:INT:TOUT\n"));
+			break;
+		}
 #endif
 	}
 
