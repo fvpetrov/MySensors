@@ -750,8 +750,8 @@ extern "C" {
 	 */
 	void NRF5_RADIO_TIMER_IRQ_HANDLER()
 	{
-		NRF5_TRACE( __LINE__ );
 		if (NRF5_RADIO_TIMER->EVENTS_COMPARE[3] == 1) {
+			NRF5_TRACE( __LINE__ );
 			_stopTimer();
 			NRF_RESET_EVENT(NRF5_RADIO_TIMER->EVENTS_COMPARE[1]);
 			if (ack_received == false) {
@@ -766,7 +766,7 @@ extern "C" {
 		}
 
 		if (NRF5_RADIO_TIMER->EVENTS_COMPARE[1] == 1) {
-			__asm__("BKPT");
+			//__asm__("BKPT");
 		}
 	}
 } // extern "C"
