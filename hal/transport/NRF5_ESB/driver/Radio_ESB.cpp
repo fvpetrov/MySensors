@@ -59,23 +59,21 @@ static uint8_t node_address = 0;
 // TX power level
 static int8_t tx_power_level = (MY_NRF5_ESB_PA_LEVEL << RADIO_TXPOWER_TXPOWER_Pos);
 
-volatile bool trace_enable = false;
-#define TRACE_ENTRIES	(1024)
+volatile bool trace_enable = true;
+#define TRACE_ENTRIES	(3072)
 static volatile uint32_t trace_index;
 static volatile uint64_t trace_buffer_line[ TRACE_ENTRIES ];
-static volatile uint64_t trace_buffer_time[ TRACE_ENTRIES ];
-inline void NRF5_TRACE( uint32_t line ) 
+static volatile uint32_t trace_buffer_time[ TRACE_ENTRIES ];
+inline void NRF5_TRACE( uint32_t line, uint32_t info ) 
 {
-	if( trace_enable ) {
-		if( trace_index >= TRACE_ENTRIES ) {
-			__asm__("BKPT"); 
-		}
-		else {
-			trace_buffer_line[ trace_index ] = line;
-			trace_buffer_time[ trace_index ] = (*(uint32_t *)0xE0001004); 
-			++ trace_index; 
-		}
+	if( trace_index >= TRACE_ENTRIES ) {
+		//__asm__("BKPT"); 
+		trace_index = 0;
 	}
+		
+	trace_buffer_line[ trace_index ] = line | ( ((uint64_t)info) << 32 );
+	trace_buffer_time[ trace_index ] = (*(uint32_t *)0xE0001004); 
+	++ trace_index;
 }
 
 // Initialize radio unit
@@ -350,9 +348,11 @@ static uint8_t NRF5_ESB_readMessage(void *data)
 void NRF5_ESB_endtx();
 void NRF5_ESB_starttx()
 {
+	NRF5_TRACE( __LINE__, tx_retries );
 	if (tx_retries > 0) {
 		// Prevent radio to write into TX memory while receiving
 		if (NRF_RADIO->PACKETPTR != (uint32_t)&tx_buffer) {
+			NRF5_TRACE( __LINE__, 0 );
 			// Disable shorts
 			NRF_RADIO->SHORTS = 0;
 			// Disable radio
@@ -376,6 +376,8 @@ void NRF5_ESB_starttx()
 		NRF5_RADIO_TIMER->CC[3] = NRF5_ESB_ARD - NRF5_ESB_RAMP_UP_TIME;
 		// Set radio disable time to ACK_WAIT time
 		NRF5_RADIO_TIMER->CC[1] = NRF5_ESB_ACK_WAIT;
+		NRF5_TRACE( __LINE__, NRF5_ESB_ARD - NRF5_ESB_RAMP_UP_TIME );
+		NRF5_TRACE( __LINE__, NRF5_ESB_ACK_WAIT );
 
 		/** Configure PPI (Programmable peripheral interconnect) */
 		// Start timer on END event
@@ -403,6 +405,7 @@ void NRF5_ESB_starttx()
 		// Set buffer
 		NRF_RADIO->PACKETPTR = (uint32_t)&tx_buffer;
 
+		NRF5_TRACE( __LINE__, NRF_RADIO->STATE );
 		// Switch to TX
 		if (NRF_RADIO->STATE == RADIO_STATE_STATE_Disabled) {
 			NRF_RADIO->TASKS_TXEN = 1;
@@ -418,7 +421,7 @@ void NRF5_ESB_starttx()
 
 void NRF5_ESB_endtx()
 {
-	NRF5_TRACE( __LINE__ );
+	NRF5_TRACE( __LINE__, 0 );
 	// Clear PPI
 	NRF_PPI->CHENCLR = NRF5_ESB_PPI_BITS;
 	// Enable Ready interrupt
@@ -480,8 +483,6 @@ static bool NRF5_ESB_sendMessage(uint8_t recipient, const void *buf, uint8_t len
 
 	// Set RSSI to invalid
 	rssi_tx = INVALID_RSSI;
-trace_index = 0;
-trace_enable=true;
 	NRF5_ESB_starttx();
 
 	// Wait for end of transmission
@@ -497,6 +498,7 @@ trace_enable=true;
 		wakeups++;
 		if( millis() - start_time > 100 )
 		{
+			NRF5_TRACE( __LINE__, wakeups );
 			NRF5_RADIO_DEBUG(PSTR("NRF5:INT:TOUT\n"));
 			break;
 		}
@@ -553,7 +555,7 @@ static uint8_t reverse_byte(uint8_t address)
 
 inline void _stopTimer()
 {
-	NRF5_TRACE( __LINE__ );
+	NRF5_TRACE( __LINE__, 0 );
 	// Stop timer
 	NRF5_RADIO_TIMER->TASKS_STOP = 1;
 	// NRF52 PAN#78
@@ -562,7 +564,7 @@ inline void _stopTimer()
 
 inline void _stopACK()
 {
-	NRF5_TRACE( __LINE__ );
+	NRF5_TRACE( __LINE__, 0 );
 	// Enable RX when ready, Enable RX after disabling task
 	NRF_RADIO->SHORTS = NRF5_ESB_SHORTS_RX;
 
@@ -587,7 +589,7 @@ extern "C" {
 
 	void RADIO_BitCountMatch( void )
 	{
-		NRF5_TRACE( __LINE__ );
+		NRF5_TRACE( __LINE__, 0 );
 		NRF_RESET_EVENT(NRF_RADIO->EVENTS_BCMATCH);
 #ifdef MY_DEBUG_VERBOSE_NRF5_ESB
 		intcntr_bcmatch++;
@@ -597,19 +599,21 @@ extern "C" {
 
 		// In RX mode -> prepare ACK or RX
 		if (NRF_RADIO->STATE == RADIO_STATE_STATE_Rx) {
-			NRF5_TRACE( __LINE__ );
+			NRF5_TRACE( __LINE__, 0 );
 			// Send ACK only for node address, don't care about the ACK bit to handle bad nRF24 clones
 			if (NRF_RADIO->RXMATCH == NRF5_ESB_NODE_ADDR) {
+				NRF5_TRACE( __LINE__, 0 );
 				// Send ACK after END, an empty packet is provided in READY event
 				NRF_RADIO->SHORTS = NRF5_ESB_SHORTS_RX_TX;
 			} else {
+				NRF5_TRACE( __LINE__, 0 );
 				// No ACK -> Start RX after END
 				NRF_RADIO->SHORTS = NRF5_ESB_SHORTS_RX;
 			}
 
 			// Handle incoming ACK packet
 			if (NRF_RADIO->RXMATCH == NRF5_ESB_TX_ADDR) {
-				NRF5_TRACE( __LINE__ );
+				NRF5_TRACE( __LINE__, 0 );
 				/** Calculate time to switch radio off
 				 * This is an ACK packet, the radio is disabled by Timer
 				 * event after CC[1], calculate the time switching of the
@@ -618,11 +622,15 @@ extern "C" {
 				// Read current timer value
 				NRF5_RADIO_TIMER->TASKS_CAPTURE[1] = 1;
 
+				uint32_t cc1 = NRF5_RADIO_TIMER->CC[1];
+				NRF5_TRACE( __LINE__, cc1 );
+				cc1 +=  ((rx_buffer.len + 3) << NRF5_ESB_byte_time());
+				NRF5_TRACE( __LINE__, cc1 );
 				// Set Timer compare register 0 to end of packet (len+CRC)
-				NRF5_RADIO_TIMER->CC[1] += ((rx_buffer.len + 3) << NRF5_ESB_byte_time());
+				NRF5_RADIO_TIMER->CC[1] = cc1;
 			}
 		} else {
-			NRF5_TRACE( __LINE__ );
+			NRF5_TRACE( __LINE__, NRF_RADIO->STATE );
 			// Current mode is TX:
 			// After TX the Radio has to be always in RX mode to
 			// receive ACK or start implicit listen mode after send.
@@ -633,7 +641,7 @@ extern "C" {
 
 	void RADIO_Ready( void )
 	{
-		NRF5_TRACE( __LINE__ );
+		NRF5_TRACE( __LINE__, 0 );
 		NRF_RESET_EVENT(NRF_RADIO->EVENTS_READY);
 #ifdef MY_DEBUG_VERBOSE_NRF5_ESB
 		intcntr_ready++;
@@ -650,13 +658,14 @@ extern "C" {
 
 	void RADIO_EndOfRxPacket( void )
 	{
-		NRF5_TRACE( __LINE__ );
+		NRF5_TRACE( __LINE__, 0 );
 		// Ensure no ACK package is received
 		if (NRF_RADIO->RXMATCH != NRF5_ESB_TX_ADDR) {
-			NRF5_TRACE( __LINE__ );
+			NRF5_TRACE( __LINE__, 0 );
 			// calculate a package id
 			uint32_t pkgid = rx_buffer.pid << 16 | NRF_RADIO->RXCRC;
 			if (pkgid != package_ids[NRF_RADIO->RXMATCH]) {
+				NRF5_TRACE( __LINE__, 0 );
 				// correct package -> store id to dedect duplicates
 				package_ids[NRF_RADIO->RXMATCH] = pkgid;
 				rx_buffer.rssi = NRF_RADIO->RSSISAMPLE;
@@ -666,6 +675,7 @@ extern "C" {
 #endif
 				// Push data to buffer
 				if (rx_circular_buffer.pushFront(&rx_buffer)) {
+					NRF5_TRACE( __LINE__, 0 );
 					// Prepare ACK package
 					rx_buffer.data[0]=rx_buffer.rssi;
 					rx_buffer.len=1; // data[0] is set some lines before
@@ -675,6 +685,7 @@ extern "C" {
 					rx_buffer.noack = 0;
 #endif
 				} else {
+					NRF5_TRACE( __LINE__, 0 );
 					// Buffer is full
 					// Stop ACK
 					_stopACK();
@@ -684,7 +695,7 @@ extern "C" {
 			}
 		} else {
 			// ACK package received, ducplicates are accepted
-			NRF5_TRACE( __LINE__ );
+			NRF5_TRACE( __LINE__, 0 );
 			// rssi value in ACK included?
 			if (rx_buffer.len == 1) {
 				rssi_tx = 0-rx_buffer.data[0];
@@ -718,7 +729,7 @@ extern "C" {
 		/** This event is generated after TX or RX finised
 		 */
 		if (NRF_RADIO->EVENTS_END == 1) {
-			NRF5_TRACE( __LINE__ );
+			NRF5_TRACE( __LINE__, 0 );
 			NRF_RESET_EVENT(NRF_RADIO->EVENTS_END);
 #ifdef MY_DEBUG_VERBOSE_NRF5_ESB
 			intcntr_end++;
@@ -732,6 +743,7 @@ extern "C" {
 			        (NRF_RADIO->STATE == RADIO_STATE_STATE_RxDisable) or
 			        (NRF_RADIO->STATE == RADIO_STATE_STATE_TxRu)) {
 				if (NRF_RADIO->CRCSTATUS) {
+					NRF5_TRACE( __LINE__, NRF_RADIO->STATE );
 					RADIO_EndOfRxPacket();
 				} else {
 					/** Invalid CRC -> Switch back to RX, Stop sending ACK */
@@ -739,7 +751,7 @@ extern "C" {
 				}
 			} else {
 				// TX end
-				NRF5_TRACE( __LINE__ );
+				NRF5_TRACE( __LINE__, NRF_RADIO->STATE );
 			}
 		}
 	}
@@ -751,15 +763,15 @@ extern "C" {
 	void NRF5_RADIO_TIMER_IRQ_HANDLER()
 	{
 		if (NRF5_RADIO_TIMER->EVENTS_COMPARE[3] == 1) {
-			NRF5_TRACE( __LINE__ );
+			NRF5_TRACE( __LINE__, 0 );
 			_stopTimer();
 			NRF_RESET_EVENT(NRF5_RADIO_TIMER->EVENTS_COMPARE[1]);
 			if (ack_received == false) {
-				NRF5_TRACE( __LINE__ );
+				NRF5_TRACE( __LINE__, 0 );
 				// missing ACK, start TX again
 				NRF5_ESB_starttx();
 			} else {
-				NRF5_TRACE( __LINE__ );
+				NRF5_TRACE( __LINE__, 0 );
 				// finised TX
 				NRF5_ESB_endtx();
 			}
