@@ -496,6 +496,8 @@ static bool NRF5_ESB_sendMessage(uint8_t recipient, const void *buf, uint8_t len
 		// hwWaitForInterrupt();
 #ifdef MY_DEBUG_VERBOSE_NRF5_ESB
 		wakeups++;
+		#warning sometimes the radio gets reset and the processor gets stuck
+		//       into this loop. Break the loop after 100 milliseconds.
 		if( millis() - start_time > 100 )
 		{
 			NRF5_TRACE( __LINE__, wakeups );
@@ -606,6 +608,8 @@ extern "C" {
 				// Send ACK after END, an empty packet is provided in READY event
 				NRF_RADIO->SHORTS = NRF5_ESB_SHORTS_RX_TX;
 			} else {
+				#warning This branch is executed when (NRF_RADIO->RXMATCH == NRF5_ESB_TX_ADDR) too, see following 'if' condition
+				//       Is this behavior expected?
 				NRF5_TRACE( __LINE__, 0 );
 				// No ACK -> Start RX after END
 				NRF_RADIO->SHORTS = NRF5_ESB_SHORTS_RX;
@@ -614,6 +618,8 @@ extern "C" {
 			// Handle incoming ACK packet
 			if (NRF_RADIO->RXMATCH == NRF5_ESB_TX_ADDR) {
 				NRF5_TRACE( __LINE__, 0 );
+				#warning Following comment does not exactly match timer`s interrupt handler
+				//       CC[1] will issue a timer interrupt, but it will only be processed as soon as CC[3] expires
 				/** Calculate time to switch radio off
 				 * This is an ACK packet, the radio is disabled by Timer
 				 * event after CC[1], calculate the time switching of the
@@ -688,6 +694,8 @@ extern "C" {
 					NRF5_TRACE( __LINE__, 0 );
 					// Buffer is full
 					// Stop ACK
+					#warning sometimes, this branch is taken when the MCU is waiting for ACK after Tx
+					//       This stops the Radio, leaving the Tx process in a zombie state.
 					_stopACK();
 					// Increment pkgid allowing receive the package again
 					package_ids[NRF_RADIO->RXMATCH]++;
@@ -766,6 +774,7 @@ extern "C" {
 			NRF5_TRACE( __LINE__, 0 );
 			_stopTimer();
 			NRF_RESET_EVENT(NRF5_RADIO_TIMER->EVENTS_COMPARE[1]);
+			#warning EVENTS_COMPARE[3] is never reset
 			if (ack_received == false) {
 				NRF5_TRACE( __LINE__, 0 );
 				// missing ACK, start TX again
@@ -778,6 +787,11 @@ extern "C" {
 		}
 
 		if (NRF5_RADIO_TIMER->EVENTS_COMPARE[1] == 1) {
+			#warning Sometimes EVENTS_COMPARE[1] is fired but EVENTS_COMPARE[3] is 0
+			//       In this case, the interrupt handler is fired again and again,
+			//       waking up the processor continuously, because 
+			//		 NRF_RESET_EVENT(NRF5_RADIO_TIMER->EVENTS_COMPARE[1]);
+			//       is missing
 			//__asm__("BKPT");
 		}
 	}
